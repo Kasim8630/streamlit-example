@@ -1,38 +1,73 @@
-from collections import namedtuple
-import altair as alt
-import math
-import pandas as pd
+#pip install streamlit langchain openai faiss-cpu tiktoken
+
 import streamlit as st
-
-"""
-# Welcome to Streamlit!
-
-Edit `/streamlit_app.py` to customize this app to your heart's desire :heart:
-
-If you have any questions, checkout our [documentation](https://docs.streamlit.io) and [community
-forums](https://discuss.streamlit.io).
-
-In the meantime, below is an example of what you can do with just a few lines of code:
-"""
+from streamlit_chat import message
+from langchain.embeddings.openai import OpenAIEmbeddings
+from langchain.chat_models import ChatOpenAI
+from langchain.chains import ConversationalRetrievalChain
+from langchain.document_loaders.csv_loader import CSVLoader
+from langchain.vectorstores import FAISS
+import tempfile
 
 
-with st.echo(code_location='below'):
-    total_points = st.slider("Number of points in spiral", 1, 5000, 2000)
-    num_turns = st.slider("Number of turns in spiral", 1, 100, 9)
+user_api_key = st.sidebar.text_input(
+    label="#### Your OpenAI API key 👇",
+    placeholder="Paste your openAI API key, sk-",
+    type="password")
 
-    Point = namedtuple('Point', 'x y')
-    data = []
+uploaded_file = st.sidebar.file_uploader("upload", type="csv")
 
-    points_per_turn = total_points / num_turns
+if uploaded_file :
+    with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+        tmp_file.write(uploaded_file.getvalue())
+        tmp_file_path = tmp_file.name
 
-    for curr_point_num in range(total_points):
-        curr_turn, i = divmod(curr_point_num, points_per_turn)
-        angle = (curr_turn + 1) * 2 * math.pi * i / points_per_turn
-        radius = curr_point_num / total_points
-        x = radius * math.cos(angle)
-        y = radius * math.sin(angle)
-        data.append(Point(x, y))
+    loader = CSVLoader(file_path=tmp_file_path, encoding="utf-8")
+    data = loader.load()
 
-    st.altair_chart(alt.Chart(pd.DataFrame(data), height=500, width=500)
-        .mark_circle(color='#0068c9', opacity=0.5)
-        .encode(x='x:Q', y='y:Q'))
+    embeddings = OpenAIEmbeddings()
+    vectors = FAISS.from_documents(data, embeddings)
+
+    chain = ConversationalRetrievalChain.from_llm(llm = ChatOpenAI(temperature=0.0,model_name='gpt-3.5-turbo', openai_api_key=user_api_key),
+                                                                      retriever=vectors.as_retriever())
+
+    def conversational_chat(query):
+        
+        result = chain({"question": query, "chat_history": st.session_state['history']})
+        st.session_state['history'].append((query, result["answer"]))
+        
+        return result["answer"]
+    
+    if 'history' not in st.session_state:
+        st.session_state['history'] = []
+
+    if 'generated' not in st.session_state:
+        st.session_state['generated'] = ["Hello ! Ask me anything about " + uploaded_file.name + " 🤗"]
+
+    if 'past' not in st.session_state:
+        st.session_state['past'] = ["Hey ! 👋"]
+        
+    #container for the chat history
+    response_container = st.container()
+    #container for the user's text input
+    container = st.container()
+
+    with container:
+        with st.form(key='my_form', clear_on_submit=True):
+            
+            user_input = st.text_input("Query:", placeholder="Talk about your csv data here (:", key='input')
+            submit_button = st.form_submit_button(label='Send')
+            
+        if submit_button and user_input:
+            output = conversational_chat(user_input)
+            
+            st.session_state['past'].append(user_input)
+            st.session_state['generated'].append(output)
+
+    if st.session_state['generated']:
+        with response_container:
+            for i in range(len(st.session_state['generated'])):
+                message(st.session_state["past"][i], is_user=True, key=str(i) + '_user', avatar_style="big-smile")
+                message(st.session_state["generated"][i], key=str(i), avatar_style="thumbs")
+                
+#streamlit run tuto_chatbot_csv.py
